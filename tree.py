@@ -7,7 +7,7 @@ from colorama import init, Fore, Style
 # 初始化 colorama
 init()
 
-def tree(directory, max_depth, current_depth=0):
+def tree(directory, max_depth, show_all, current_depth=0):
     # 获取目录中的所有项目
     try:
         items = os.listdir(directory)
@@ -34,7 +34,8 @@ def tree(directory, max_depth, current_depth=0):
             ext = ext.lower() or ".<no ext>"
             counter_data = file_types[ext]
             counter_data[0] += 1
-            if counter_data[0] <= 2:
+            # 如果启用了 -a 参数，保存所有文件名
+            if show_all or counter_data[0] <= 2:
                 counter_data[1].append(item)
     
     # 仅对文件夹排序
@@ -55,20 +56,21 @@ def tree(directory, max_depth, current_depth=0):
             # 显示样本文件
             for f in samples:
                 print(f"{indent}  {Fore.GREEN}{f}{Style.RESET_ALL}")
-            # 显示省略信息
-            if count > 2:
+            # 如果没有启用 -a 参数，显示省略信息
+            if not show_all and count > 2:
                 print(f"{indent}  {Fore.YELLOW}... ({count-2} more {ext} files){Style.RESET_ALL}")
     
     # 递归处理子目录
     if current_depth < max_depth - 1:
         for folder in folders:
             folder_path = os.path.join(directory, folder)
-            tree(folder_path, max_depth, current_depth + 1)
+            tree(folder_path, max_depth, show_all, current_depth + 1)
 
 def main():
     parser = argparse.ArgumentParser(description='彩色目录树生成器')
     parser.add_argument('path', nargs='?', default=os.getcwd(), help='指定路径，默认当前目录')
     parser.add_argument('-l', '--level', type=int, default=5, help='显示的层级数目，默认是5')
+    parser.add_argument('-a', '--all', action='store_true', help='显示所有文件（不进行摘要）')
     
     args = parser.parse_args()
     
@@ -77,7 +79,7 @@ def main():
         sys.exit(1)
     
     try:
-        tree(args.path, args.level)
+        tree(args.path, args.level, args.all)
     except Exception as e:
         print(f"{Fore.RED}错误: {e}{Style.RESET_ALL}")
 
