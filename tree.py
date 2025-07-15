@@ -22,7 +22,7 @@ SPECIAL_HANDLING_RULES = [
 # 优先级 3: 内置的默认忽略规则
 BUILTIN_IGNORE_PATTERNS = [
     '**/__pycache__', '*.py[cod]', '*.pyd', '*.pyo', '*.pyc',
-    '.git', '.vscode', 'node_modules', '.venv',
+    '.git', '.vscode', 'node_modules', '.venv',"test*"
 ]
 
 def load_gitignore_rules(directory):
