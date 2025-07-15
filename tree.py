@@ -34,7 +34,6 @@ def load_gitignore_rules(directory):
             for line in f:
                 stripped_line = line.strip()
                 if stripped_line and not stripped_line.startswith('#'):
-                    # 移除末尾斜杠以匹配文件和目录
                     if stripped_line.endswith('/'): stripped_line = stripped_line[:-1]
                     rules.append(stripped_line)
     except Exception as e:
@@ -47,27 +46,22 @@ def get_item_final_state(item, path, include_patterns, combined_ignore_list):
     优先级: include > special > ignore > default
     返回: (isVisible, forceSummary)
     """
-    # 优先级 1: --include 强制可见和摘要
     full_path = os.path.join(path, item).replace('\\', '/')
     for p in include_patterns:
         if fnmatch.fnmatch(item, p) or fnmatch.fnmatch(full_path, p):
             return True, True
 
-    # 优先级 2: 特殊处理规则
     for p, v, s in SPECIAL_HANDLING_RULES:
         if fnmatch.fnmatch(item, p):
             return v, s
 
-    # 优先级 3 & 4: 忽略列表 和 默认可见
-    is_ignored = False
     for pattern in combined_ignore_list:
         if fnmatch.fnmatch(item, pattern) or fnmatch.fnmatch(full_path, pattern):
-            is_ignored = True
-            break
+            return False, False
 
-    return not is_ignored, False
+    return True, False
 
-def tree(directory, max_depth, show_all, include_patterns, combined_ignore_list, force_summary=False, current_depth=0):
+def tree(directory, max_depth, show_all, include_patterns, combined_ignore_list, max_count, force_summary=False, current_depth=0):
     try:
         raw_items = os.listdir(directory)
     except PermissionError:
@@ -78,8 +72,8 @@ def tree(directory, max_depth, show_all, include_patterns, combined_ignore_list,
         return
 
     folders, file_types = [], defaultdict(lambda: [0, []])
+    saturated_exts = set()
 
-    # 预处理所有条目，决定它们的可见性和摘要状态
     visible_items = []
     for item in raw_items:
         isVisible, item_force_summary = get_item_final_state(item, directory, include_patterns, combined_ignore_list)
@@ -99,16 +93,21 @@ def tree(directory, max_depth, show_all, include_patterns, combined_ignore_list,
             item_name = info['name']
             _, ext = os.path.splitext(item_name)
             ext = ext.lower() or ".<no ext>"
+            
+            if ext in saturated_exts:
+                continue
+
             counter_data = file_types[ext]
             counter_data[0] += 1
-            # 决定是否显示此文件详情
-            # 摘要模式的条件：全局force_summary为真，或当前文件的force_summary为真
+
+            if max_count > 0 and counter_data[0] >= max_count:
+                saturated_exts.add(ext)
+
             is_summary_active = force_summary or info['force_summary']
             if show_all and not is_summary_active:
                 counter_data[1].append(item_name)
             elif len(counter_data[1]) < 2:
                 counter_data[1].append(item_name)
-
 
     indent = '  ' * current_depth
     display_name = os.path.basename(directory) if current_depth > 0 else directory
@@ -118,23 +117,31 @@ def tree(directory, max_depth, show_all, include_patterns, combined_ignore_list,
         for ext in sorted(file_types.keys()):
             count, samples = file_types[ext]
 
-            # 检查当前目录是否需要摘要（从父目录继承或自身触发）
             is_summary_active_for_files = force_summary or any(info['force_summary'] for info in visible_items if not info['is_dir'])
 
             for f in samples:
                 print(f"{indent}  {Fore.GREEN}{f}{Style.RESET_ALL}")
+            
+            remaining_count = count - len(samples)
+            if not (show_all and not is_summary_active_for_files) and remaining_count > 0:
+                display_count = remaining_count
+                summary_color = Fore.YELLOW  # 默认摘要颜色
 
-            if not (show_all and not is_summary_active_for_files) and count > len(samples):
-                print(f"{indent}  {Fore.YELLOW}... ({count - len(samples)} more {ext} files){Style.RESET_ALL}")
+                # 如果总数达到了上限，摘要中显示 max_count 并标红
+                if max_count > 0 and count >= max_count:
+                    display_count = max_count
+                    summary_color = Style.BRIGHT + Fore.RED  # 【新功能】达到上限时使用红色
+
+                print(f"{indent}  {summary_color}... ({display_count} more {ext} files){Style.RESET_ALL}")
 
     if current_depth < max_depth - 1:
         for folder_info in folders:
-            # 递归时，将父目录的摘要状态和当前文件夹的摘要状态进行“或”运算传递下去
             new_force_summary = force_summary or folder_info['force_summary']
-            tree(os.path.join(directory, folder_info['name']), max_depth, show_all, include_patterns, combined_ignore_list, new_force_summary, current_depth + 1)
+            tree(os.path.join(directory, folder_info['name']), max_depth, show_all, include_patterns, combined_ignore_list, max_count, new_force_summary, current_depth + 1)
 
 def run_log_mode(args, combined_ignore_list):
     """【分析模式】只运行分析和日志输出，不生成树。"""
+    # ... 此函数逻辑不变 ...
     target_path = os.path.abspath(args.path)
     try:
         raw_items = os.listdir(target_path)
@@ -144,16 +151,11 @@ def run_log_mode(args, combined_ignore_list):
     analysis_results = []
     for item in raw_items:
         result = {'name': item, 'status': '', 'color': '', 'reason': '', 'summary': ''}
-
-        # 统一逻辑获取状态
         isVisible, forceSummary = get_item_final_state(item, target_path, args.include_patterns, combined_ignore_list)
-
         result['is_visible'] = isVisible
         result['summary'] = '(摘要)' if forceSummary else ''
         result['color'] = Fore.GREEN if isVisible else Fore.RED
         result['status'] = '[可见]' if isVisible else '[忽略]'
-
-        # 追溯原因
         full_path_for_match = os.path.join(target_path, item).replace('\\', '/')
         if any(fnmatch.fnmatch(item, p) or fnmatch.fnmatch(full_path_for_match, p) for p in args.include_patterns):
             result['reason'] = '-i 参数'
@@ -163,39 +165,36 @@ def run_log_mode(args, combined_ignore_list):
              result['reason'] = '.gitignore/内置'
         else:
             result['reason'] = '默认'
-
         analysis_results.append(result)
 
-    # --- 开始打印报告 ---
     print(f"{Fore.CYAN}--- 分析模式: {target_path} ---{Style.RESET_ALL}")
     gitignore_rules = load_gitignore_rules(target_path)
     if gitignore_rules:
         print(f"{Fore.YELLOW}[规则来源]{Style.RESET_ALL} .gitignore: {len(gitignore_rules)} 条, 内置: {len(BUILTIN_IGNORE_PATTERNS)} 条 (组合使用)")
     else:
         print(f"{Fore.YELLOW}[规则来源]{Style.RESET_ALL} .gitignore: 未找到, 内置: {len(BUILTIN_IGNORE_PATTERNS)} 条 (使用内置)")
-
     visible_count = sum(1 for r in analysis_results if r['is_visible'])
     ignored_items = [r['name'] for r in analysis_results if not r['is_visible']]
     ignored_count = len(ignored_items)
     ignored_names_str = f" ({', '.join(ignored_items[:5])}{', ...' if len(ignored_items) > 5 else ''})" if ignored_items else ""
     print(f"{Fore.YELLOW}[一级条目]{Style.RESET_ALL} 总数: {len(raw_items)}, 可见: {visible_count}, 忽略: {ignored_count}{ignored_names_str}")
     print(f"{Fore.CYAN}{'-'*70}{Style.RESET_ALL}")
-
     for res in sorted(analysis_results, key=lambda x: (not x['is_visible'], x['name'])):
         print(f"  {res['color']}{res['name']:<30}{res['status']:<8}{Style.RESET_ALL}{Fore.YELLOW}{res['summary']:<8}{Style.RESET_ALL}(来源: {res['reason']})")
-
 
 def main():
     parser = argparse.ArgumentParser(
         description='彩色目录树生成器。\n规则优先级: --include > 特殊规则 > .gitignore + 内置规则。',
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog="示例: \n  ctr -l 3                # 显示3层目录树\n  ctr -a -i data          # 显示全部文件，但强制摘要输出data目录\n  ctr --log               # 分析当前目录的规则应用情况"
+        epilog="示例: \n  ctr -l 3                # 显示3层目录树\n  ctr -a -i data          # 显示全部文件，但强制摘要输出data目录\n  ctr --log               # 分析当前目录的规则应用情况\n  ctr --max_count 100     # 摘要中文件数最多显示为 100 more，并提升大型目录的性能"
     )
     parser.add_argument('path', nargs='?', default=os.getcwd(), help='指定路径，默认当前目录')
     parser.add_argument('-l', '--level', type=int, default=5, help='显示的层级数目，默认是5')
     parser.add_argument('-a', '--all', action='store_true', help='显示所有文件（可被摘要规则覆盖）')
     parser.add_argument('-i', '--include', action='append', dest='include_patterns', default=[], help='最高优先级：强制包含某个模式并启用摘要输出。\n可多次使用 (e.g., -i data -i *.log)。')
     parser.add_argument('--log', action='store_true', help='【分析模式】不显示目录树，仅输出规则和顶层目录的分析日志。')
+    # 【新功能】更新帮助文档
+    parser.add_argument('--max_count', type=int, default=500, help='摘要中文件计数的显示和统计上限。达到上限的摘要将用红色标出。设置为0则无限制计数。默认为500。')
 
     args = parser.parse_args()
 
@@ -203,14 +202,13 @@ def main():
         print(f"{Fore.RED}错误：层级数必须大于等于1{Style.RESET_ALL}"); sys.exit(1)
 
     target_path = os.path.abspath(args.path)
-    # 组合 .gitignore 和内置规则
     combined_ignore_list = BUILTIN_IGNORE_PATTERNS + load_gitignore_rules(target_path)
 
     if args.log:
         run_log_mode(args, combined_ignore_list)
     else:
         try:
-            tree(target_path, args.level, args.all, args.include_patterns, combined_ignore_list)
+            tree(target_path, args.level, args.all, args.include_patterns, combined_ignore_list, args.max_count)
         except Exception as e:
             print(f"{Fore.RED}错误: {e}{Style.RESET_ALL}")
 
